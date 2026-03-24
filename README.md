@@ -1,10 +1,3 @@
-diff --git a/README.md b/README.md
-index 7779775d7c7668df40fc751623849e37de2dc696..aa65ee6d65fcdd294e195a0a65054ce5a63e4a3f 100644
---- a/README.md
-+++ b/README.md
-@@ -1 +1,67 @@
--# ISyE-6414-Regression-Modelling
-\ No newline at end of file
 +# ISyE-6414 Regression Modelling
 +
 +This repository contains the final project materials for **ISyE 6414** focused on regression modelling with a NASA near-Earth comet dataset.
