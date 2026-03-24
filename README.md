@@ -1,4 +1,3 @@
-# ISyE-6414-Regression-Modelling
 # ISyE-6414 Regression Modelling
 
 This repository contains the final project materials for **ISyE 6414** focused on regression modelling with a NASA near-Earth comet dataset.
