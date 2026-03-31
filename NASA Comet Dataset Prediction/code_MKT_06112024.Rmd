@@ -1,457 +1,525 @@
 ---
-title: "ISyE 6414 Final Projecct: Predicting for Near Earth Comets"
+title: "ISyE 6414 Final Project: Predicting for Near-Earth Comets"
 author: "Troy Allen, Roy Gabriel, Nattakorn Kittisut, Corey Smith & Moe Kyaw Thu"
 date: "2024-06-13"
-output: html_document
+output:
+  html_document:
+    toc: true
+    toc_depth: 3
+    toc_float: true
+    number_sections: true
+    theme: readable
 ---
 
-Let's load in the data and some necessary packages first.
-```{r}
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  warning = FALSE,
+  message = FALSE,
+  fig.width = 8,
+  fig.height = 6
+)
+```
+
+# Setup
+
+## Load Libraries
+
+```{r load-libraries}
+# Load MASS before tidyverse so dplyr::select is not masked
+library(MASS)
 library(tidyverse)
 library(caret)
 library(glmnet)
 library(stargazer)
-comet_data=read.csv("Near-Earth_Comets_-_Orbital_Elements_20240605.csv")
-comet_data
-```
-
-Checking for missing values:
-```{r}
-# Find nan values
-missing_values <- comet_data %>% 
-  summarise(across(everything(), ~ sum(is.na(.)))) %>% 
-  gather(key = "Column", value = "MissingValues")
-
-# Print nan values
-#missing_values
-```
-
-We can see the missing values are as follows:
-
-A1 = 122 missing values
-A2 = 119 missing values
-A3 = 150 missing values
-DT = 156 missing values
-
-Obviously can't drop all of these rows due to the sheer number of missing values we have.
-
-```{r}
-# Print out the 4 problematic columns
-print(comet_data %>% select(A1..AU.d.2., A2..AU.d.2., A3..AU.d.2., DT..d.))
-```
-Dropping the columns A3 and DT seems like the best option for now. Currently dropping A1/A2 as well since I wanted to see what Corey has to say about the importance of these columns in our models.
-
-```{r}
-# Drop the 'A3' and 'DT' columns
-comet_data_no_A3DT <- comet_data %>%
-  select(-c(A1..AU.d.2., A2..AU.d.2.,A3..AU.d.2., DT..d.))
-
-# Print the dataset without A3/DT
-comet_data_no_A3DT
-```
-
-Let's check for outliers now.
-
-```{r}
-# Filter out non-numeric columns
-numeric_cols <- select_if(comet_data_no_A3DT, is.numeric)
-
-# Calculate Z-scores for each numeric column
-z_scores <- numeric_cols %>% 
-  mutate(across(everything(), scale))
-
-# Define threshold
-threshold <- 2
-
-# Identify outliers based on Z-score
-outliers <- comet_data_no_A3DT %>% 
-  filter(rowSums(abs(z_scores) > threshold, na.rm = TRUE) > 0)
-
-print(outliers)
-```
-
-```{r}
-# Filter the outlier columns based on threshold
-outlier_columns <- apply(abs(z_scores) > threshold, 1, function(x) colnames(comet_data_no_A3DT)[x])
-
-# Print which columns the outlier lies in and the entire row associated with outlier
-for(i in 1:nrow(outliers)) {
-  if(length(outlier_columns[[i]]) > 0) {
-    cat("Row:", i, "\n")
-    cat("Outlier columns:", paste(outlier_columns[i], collapse = ", "), "\n")
-    print(outliers[i, ])
-  }
-}
-
-```
-Wanted to compare each to the mean and stddev of each column.
-
-```{r}
-# Filter out numeric columns
-numeric_data <- comet_data_no_A3DT[, sapply(comet_data_no_A3DT, is.numeric)]
-
-# Calculate mean of each column
-column_means <- colMeans(numeric_data, na.rm = TRUE)
-
-# Calculate standard deviation of each column
-column_stddev <- sapply(numeric_data, sd, na.rm = TRUE)
-
-# Print mean and standard deviation of each column
-for (i in seq_along(column_means)) {
-  cat("Column:", names(column_means)[i], "\n")
-  cat("Mean:", column_means[i], "\n")
-  cat("Standard Deviation:", column_stddev[i], "\n\n")
-}
-```
-
-Creating a standardized version of the data in case it is needed.
-
-```{r}
-# Get numeric columns from cleaned data
-numeric_comet_data <- comet_data_no_A3DT[, sapply(comet_data_no_A3DT, is.numeric)]
-
-# Get mean + sd
-means <- colMeans(numeric_comet_data)
-sds <- apply(numeric_comet_data, 2, sd)
-
-# Standardize each column and print
-standardized_comet_data <- scale(numeric_comet_data, center = means, scale = sds)
-```
-
-Some simple plots based on Eccentricity, perihelion distance, and orbital elements:
-
-```{r}
-ggplot(comet_data_no_A3DT, aes(x = e, y = i..deg.)) +
-  geom_point() +
-  labs(x = "Eccentricity", y = "Inclination (deg)", title = "Scatter Plot of Eccentricity vs. Inclination")
-```
-
-```{r}
-ggplot(comet_data_no_A3DT, aes(x = e, y = q..AU.)) +
-  geom_point() +
-  labs(x = "Eccentricity", y = "Perihelion Distance (q AU)", title = "Scatter Plot of Eccentricity vs. Perihelion Distance") 
-```
-
-```{r}
-# Filter orbital elements 
-orbital_elements <- comet_data[, c("q..AU.", "Epoch..TDB.", "TP..TDB.", "e", "i..deg.", "w..deg.", "Node..deg.")]
-
-# Create a scatterplot matrix showing relationship between q and other orbital elements
-pairs(orbital_elements, pch = 21, bg = "skyblue")
-
-#Write CSV
-#write.csv(comet_data_no_A3DT, "comet_data_cleaned.csv", row.names = FALSE)
-```
-
-```{r}
-#Reading data
-orbit <- read.csv("comet_data_cleaned.csv")
-print(head(orbit))
-```
-
-```{r}
-#Loading appropriate packages for statistical analysis
-library(readr)
-library(ggplot2)
-library(dplyr)
 library(car)
-library(stats)
 library(lmtest)
 library(gghalfnorm)
 library(faraway)
-library(MASS)
-library(caret)
-library(tidyverse)
-library(caret)
-library(glmnet)
 ```
 
-```{r}
-#RQ1: Which orbital elements best predict the minimum distance between the comet and Earth (MOID)? Are all input parameters significant? Is the MOID impacted more by the orbit eccentricity (e) or its critical angles (i, w, Node)?
+## Load Data
 
-#Sub-setting data for clarity in linear regression modeling
-#Deleted columns include Object, Ref, and Object_name since they will only lead to NANs if included in the model.
-sub.orbit <- orbit[,2:11]
-rq1.lm <- lm(MOID..AU. ~., data = sub.orbit)
+```{r load-data}
+comet_data <- read.csv("Near-Earth_Comets_-_Orbital_Elements_20240605.csv")
+head(comet_data)
+```
+
+# Data Cleaning
+
+## Missing Values
+
+```{r missing-values}
+missing_values <- comet_data %>%
+  summarise(across(everything(), ~ sum(is.na(.)))) %>%
+  pivot_longer(everything(), names_to = "Column", values_to = "MissingValues") %>%
+  filter(MissingValues > 0)
+
+missing_values
+```
+
+The columns with missing values are:
+
+- **A1**: 122 missing values
+- **A2**: 119 missing values
+- **A3**: 150 missing values
+- **DT**: 156 missing values
+
+Given the high proportion of missing values, dropping these columns is preferable to
+dropping rows.
+
+```{r inspect-missing-columns}
+comet_data[, c("A1..AU.d.2.", "A2..AU.d.2.", "A3..AU.d.2.", "DT..d.")] %>%
+  head(10)
+```
+
+## Drop Columns with Excessive Missing Data
+
+We drop A1, A2, A3, and DT due to the high number of missing values.
+
+```{r drop-columns}
+comet_data_clean <- comet_data %>%
+  select(-c("A1..AU.d.2.", "A2..AU.d.2.", "A3..AU.d.2.", "DT..d."))
+
+head(comet_data_clean)
+```
+
+## Outlier Detection
+
+Using Z-scores with a threshold of 2 to identify outliers across numeric columns.
+
+```{r outlier-detection}
+numeric_cols <- select_if(comet_data_clean, is.numeric)
+z_scores <- numeric_cols %>% mutate(across(everything(), scale))
+
+threshold <- 2
+
+outliers <- comet_data_clean %>%
+  filter(rowSums(abs(z_scores) > threshold, na.rm = TRUE) > 0)
+
+cat("Number of outlier rows:", nrow(outliers), "\n")
+```
+
+```{r outlier-columns}
+outlier_columns <- apply(abs(z_scores) > threshold, 1, function(x) colnames(comet_data_clean)[x])
+
+for (i in 1:nrow(outliers)) {
+  if (length(outlier_columns[[i]]) > 0) {
+    cat("Row:", i, "\n")
+    cat("Outlier columns:", paste(outlier_columns[i], collapse = ", "), "\n")
+    print(outliers[i, ])
+    cat("\n")
+  }
+}
+```
+
+## Summary Statistics
+
+```{r summary-stats}
+numeric_data <- comet_data_clean[, sapply(comet_data_clean, is.numeric)]
+
+summary_stats <- data.frame(
+  Mean = colMeans(numeric_data, na.rm = TRUE),
+  SD = sapply(numeric_data, sd, na.rm = TRUE)
+)
+
+round(summary_stats, 4)
+```
+
+## Standardization
+
+Creating a standardized version of the numeric data for potential use in modeling.
+
+```{r standardize}
+standardized_comet_data <- scale(numeric_data)
+head(standardized_comet_data)
+```
+
+# Exploratory Data Analysis
+
+## Eccentricity vs. Inclination
+
+```{r eda-eccentricity-inclination}
+ggplot(comet_data_clean, aes(x = e, y = i..deg.)) +
+  geom_point(alpha = 0.6, color = "steelblue") +
+  labs(
+    x = "Eccentricity",
+    y = "Inclination (deg)",
+    title = "Eccentricity vs. Inclination"
+  ) +
+  theme_minimal()
+```
+
+## Eccentricity vs. Perihelion Distance
+
+```{r eda-eccentricity-perihelion}
+ggplot(comet_data_clean, aes(x = e, y = q..AU.)) +
+  geom_point(alpha = 0.6, color = "steelblue") +
+  labs(
+    x = "Eccentricity",
+    y = "Perihelion Distance (q, AU)",
+    title = "Eccentricity vs. Perihelion Distance"
+  ) +
+  theme_minimal()
+```
+
+## Scatterplot Matrix of Orbital Elements
+
+```{r eda-scatterplot-matrix, fig.width=10, fig.height=10}
+orbital_elements <- comet_data[, c("q..AU.", "Epoch..TDB.", "TP..TDB.", "e",
+                                    "i..deg.", "w..deg.", "Node..deg.")]
+
+pairs(orbital_elements, pch = 21, bg = "skyblue",
+      main = "Scatterplot Matrix of Orbital Elements")
+```
+
+# Research Question 1: Which Orbital Elements Best Predict MOID?
+
+> **RQ1:** Which orbital elements best predict the minimum distance between the comet
+> and Earth (MOID)? Are all input parameters significant? Is MOID impacted more by
+> orbit eccentricity (e) or its critical angles (i, w, Node)?
+
+## Full Linear Model
+
+```{r rq1-load-cleaned-data}
+orbit <- read.csv("comet_data_cleaned.csv")
+sub.orbit <- orbit[, 2:11]
+```
+
+```{r rq1-full-model}
+rq1.lm <- lm(MOID..AU. ~ ., data = sub.orbit)
 summary(rq1.lm)
-#Interpretation: Variables namely q..AU., Node..deg., w..deg., and e are significant predictor variables
 ```
 
+**Interpretation:** The significant predictors are `q.AU`, `Node.deg`, `w.deg`, and `e`.
 
-```{r}
-#RQ1 Modal Diagnostics:
-#Checking for normality
-print(shapiro.test(resid(rq1.lm)))
-#Interpretation: There is strong evidence that the residuals of the regression model do not come from a normally distributed population.
+## Model Diagnostics (Full Model)
 
-#Checking for multicollinearity
-print(vif(rq1.lm))
-#There are mainly four multicollinearity: Epoch..TDB., TP..TDB., Q..AU., and P..yr.
+```{r rq1-diagnostics}
+# Normality
+shapiro.test(resid(rq1.lm))
+```
 
-#Checking for Homoscedasticity/heteroskedasticity
-print(ncvTest(rq1.lm))
-#With p-value less than 0.05, there is heteroskedasticity in the model. 
+There is strong evidence that the residuals are **not normally distributed**.
 
-#Checking for outlier values
+```{r rq1-vif}
+# Multicollinearity
+vif(rq1.lm)
+```
+
+High VIF values for `Epoch.TDB`, `TP.TDB`, `Q.AU`, and `P.yr` indicate **multicollinearity**.
+
+```{r rq1-heteroskedasticity}
+# Heteroskedasticity
+ncvTest(rq1.lm)
+```
+
+With p-value < 0.05, there is **heteroskedasticity** in the model.
+
+```{r rq1-cooks-distance}
+# Influential observations
 cook.rq.1 <- cooks.distance(rq1.lm)
-halfnorm(cook.rq.1,5,ylab="Cook’s distances")
-#Interpretation: The outliers are observations 5, 158, 6, 22, and 160.
+halfnorm(cook.rq.1, 5, ylab = "Cook's Distances")
 ```
 
-```{r}
-# Results from tests
+Outliers identified at observations: **5, 158, 6, 22, and 160**.
+
+## Diagnostic Summary Table
+
+```{r rq1-diagnostic-table}
 shapiro_w <- 0.89569
 shapiro_p <- 3.234e-09
 
-vif_values <- c(Epoch_TDB = 575.732499, TP_TDB = 575.160715, e = 11.270028, i_deg = 2.146876, 
-                w_deg = 1.137160, Node_deg = 1.146094, q_AU = 5.176505, Q_AU = 152.786828, P_yr = 108.347699)
+vif_values <- c(
+  Epoch_TDB = 575.73, TP_TDB = 575.16, e = 11.27, i_deg = 2.15,
+  w_deg = 1.14, Node_deg = 1.15, q_AU = 5.18, Q_AU = 152.79, P_yr = 108.35
+)
 
-ncv_chisquare <- 21.54705
-ncv_df <- 1
-ncv_p <- 3.4525e-06
-cook.outlie <- c(5, 158, 6, 22, 160)
+ncv_chisquare <- 21.55
+ncv_p <- 3.45e-06
 
-# Creating the table
 result_table <- data.frame(
   Test = c(
-    "Shapiro-Wilk normality test", 
-    rep("Variance Inflation Factor (VIF)", length(vif_values)), 
-    "Non-constant Variance Score Test", 
-    "Cook's Distance"
+    "Shapiro-Wilk Normality",
+    rep("Variance Inflation Factor", length(vif_values)),
+    "Non-constant Variance",
+    "Cook's Distance Outliers"
   ),
   Result = c(
     paste("W:", shapiro_w, ", p-value:", format(shapiro_p, scientific = TRUE)),
-    paste(names(vif_values), ":", round(vif_values, 6)),
-    paste("Chisquare:", ncv_chisquare, ", Df:", ncv_df, ", p:", format(ncv_p, scientific = TRUE)),
-    paste("Outliers:", paste(cook.outlie, collapse = ", "))
+    paste(names(vif_values), ":", round(vif_values, 2)),
+    paste("Chi-sq:", ncv_chisquare, ", p:", format(ncv_p, scientific = TRUE)),
+    "Observations: 5, 158, 6, 22, 160"
   )
 )
 
-# Printing the table
-stargazer(result_table, type = "text", summary = FALSE, rownames = FALSE, out = "stargazer.txt")
-
-
+stargazer(result_table, type = "text", summary = FALSE, rownames = FALSE)
 ```
 
-```{r}
-#RQ1: Further modeling: Stepwise Regression
+## Forward Stepwise Regression
+
+```{r rq1-forward-stepwise}
 simple_model <- lm(MOID..AU. ~ 1, data = sub.orbit)
-full_model <- lm(MOID..AU. ~., data = sub.orbit)
+full_model <- lm(MOID..AU. ~ ., data = sub.orbit)
+
+rq1_forward <- step(simple_model,
+  scope = list(lower = simple_model, upper = full_model),
+  direction = "forward", trace = 0
+)
+
+summary(rq1_forward)
 ```
 
-```{r}
-#RQ1 Stepwise Regression
-#Forward Stepwise Regression
-rq1_model_forward <- step(simple_model, scope=list(lower=simple_model, upper=full_model), direction="forward")
-summary(rq1_model_forward)
-#Interpretation: Based on the output of the forward stepwise regression, the variables selected were `Q..AU`, `P..yr`, `q..AU`, `e`, `Node..deg`, and `w..deg`. This model had the lowest AIC score of -744.09.
+Selected variables: `Q.AU`, `P.yr`, `q.AU`, `e`, `Node.deg`, and `w.deg` (lowest AIC: -744.09).
 
-#Visualization for Forward Stepwise Regression
-par(mfrow=c(2,2))
-qqnorm(residuals(rq1_model_forward))
-qqline(residuals(rq1_model_forward))
-hist(residuals(rq1_model_forward), main="Histogram of residuals",
-xlab="Residuals")
-plot(residuals(rq1_model_forward), xlab="Order", ylab="Residuals")
-abline(0, 0, lty=1, col="red")
-plot(fitted(rq1_model_forward), residuals(rq1_model_forward), xlab="Fitted values",
-ylab="Residuals")
-abline(0, 0, lty=1, col="red")
+```{r rq1-forward-diagnostics, fig.height=8}
+par(mfrow = c(2, 2))
+qqnorm(residuals(rq1_forward)); qqline(residuals(rq1_forward))
+hist(residuals(rq1_forward), main = "Histogram of Residuals", xlab = "Residuals")
+plot(residuals(rq1_forward), xlab = "Order", ylab = "Residuals")
+abline(0, 0, lty = 1, col = "red")
+plot(fitted(rq1_forward), residuals(rq1_forward), xlab = "Fitted Values", ylab = "Residuals")
+abline(0, 0, lty = 1, col = "red")
 ```
 
-```{r}
-#Backward Stepwise Regression
-rq1_model_backward <- step(full_model, scope=list(lower=simple_model, upper=full_model), direction="backward")
-summary(rq1_model_backward)
-#Interpretation: Based on the output from the backward stepwise regression, the variables selected were `e`, `w..deg`, `Node..deg`, `q..AU`, and `P..yr`. This model had the lowest AIC score of -746.01.
+## Backward Stepwise Regression
 
-#Visualization for Backward Stepwise Regression
-par(mfrow=c(2,2))
-qqnorm(residuals(rq1_model_backward))
-qqline(residuals(rq1_model_backward))
-hist(residuals(rq1_model_backward), main="Histogram of residuals",
-xlab="Residuals")
-plot(residuals(rq1_model_backward), xlab="Order", ylab="Residuals")
-abline(0, 0, lty=1, col="red")
-plot(fitted(rq1_model_backward), residuals(rq1_model_backward), xlab="Fitted values",
-ylab="Residuals")
-abline(0, 0, lty=1, col="red")
+```{r rq1-backward-stepwise}
+rq1_backward <- step(full_model,
+  scope = list(lower = simple_model, upper = full_model),
+  direction = "backward", trace = 0
+)
+
+summary(rq1_backward)
 ```
 
-```{r}
-#Lasso Regression for RQ1
-X <- model.matrix(MOID..AU. ~., data = sub.orbit)[, -1] # Remove the intercept column
+Selected variables: `e`, `w.deg`, `Node.deg`, `q.AU`, and `P.yr` (lowest AIC: -746.01).
+
+```{r rq1-backward-diagnostics, fig.height=8}
+par(mfrow = c(2, 2))
+qqnorm(residuals(rq1_backward)); qqline(residuals(rq1_backward))
+hist(residuals(rq1_backward), main = "Histogram of Residuals", xlab = "Residuals")
+plot(residuals(rq1_backward), xlab = "Order", ylab = "Residuals")
+abline(0, 0, lty = 1, col = "red")
+plot(fitted(rq1_backward), residuals(rq1_backward), xlab = "Fitted Values", ylab = "Residuals")
+abline(0, 0, lty = 1, col = "red")
+```
+
+## Lasso Regression
+
+```{r rq1-lasso}
+X <- model.matrix(MOID..AU. ~ ., data = sub.orbit)[, -1]
 y <- sub.orbit$MOID..AU.
 
-# Fit the Lasso regression model
-# Cross-validation to find the best lambda
 cv_model <- cv.glmnet(X, y, alpha = 1)
-
-# Get the best lambda
 best_lambda <- cv_model$lambda.min
-print(best_lambda)
+cat("Best lambda:", best_lambda, "\n")
 
-# Fit the model with the best lambda
-best_lasso_model <- glmnet(X, y, alpha = 1, lambda = best_lambda)
-best_lasso_model
-
-# Get the coefficients of the best model
-coefficients <- coef(best_lasso_model)
-# Convert the sparse matrix to a regular matrix
-coefficients <- as.matrix(coefficients)
+best_lasso <- glmnet(X, y, alpha = 1, lambda = best_lambda)
+coefficients <- as.matrix(coef(best_lasso))
 print(coefficients)
-
-# Plot the coefficients against the log(lambda)
-base_lasso_model <- glmnet(X, y, alpha = 1)
-plot(base_lasso_model, xvar = "lambda", label = TRUE)
 ```
 
-```{r}
-# Define a small threshold value
+```{r rq1-lasso-plot}
+base_lasso <- glmnet(X, y, alpha = 1)
+plot(base_lasso, xvar = "lambda", label = TRUE)
+title("Lasso Coefficient Paths")
+```
+
+```{r rq1-lasso-selection}
 threshold <- 1e-6
+selected_vars <- rownames(coefficients)[abs(coefficients) > threshold]
+selected_vars <- selected_vars[selected_vars != "(Intercept)"]
 
-# Identify coefficients that are not close to zero
-selected_variables <- rownames(coefficients)[abs(coefficients) > threshold]
-
-# Print the selected variables
-selected_variables
-
-#Interpretation: As seen from the output above, with a threshold of $1e-6$, the variables selected are `e`, `i..deg`, `w..deg`, `Node..deg`, `q..AU`, and `P..yr`. The rest of the cofficients decreased to 0 or close to it at the optimal lambda value of $0.001753752$.
+cat("Selected variables by Lasso:\n")
+print(selected_vars)
 ```
 
-```{r}
-#linear Regression Modeling with lasso chosen vars
-rq1_model_lasso_chosen <- lm(MOID..AU. ~ e + i..deg. + w..deg. + Node..deg. + q..AU. + P..yr., data=sub.orbit)
-summary(rq1_model_lasso_chosen)
-#Interpretation: Other than i..deg., all the variables are significant predictors for MOID..AU..
+At the optimal lambda of ~0.00175, the selected variables are: `e`, `i.deg`, `w.deg`,
+`Node.deg`, `q.AU`, and `P.yr`.
 
-#Visualization for regression modeling with chosen Lasso variables
-par(mfrow=c(2,2))
-qqnorm(residuals(rq1_model_lasso_chosen))
-qqline(residuals(rq1_model_lasso_chosen))
-hist(residuals(rq1_model_lasso_chosen), main="Histogram of residuals",
-xlab="Residuals")
-plot(residuals(rq1_model_lasso_chosen), xlab="Order", ylab="Residuals")
-abline(0, 0, lty=1, col="red")
-plot(fitted(rq1_model_lasso_chosen), residuals(rq1_model_lasso_chosen), xlab="Fitted values",
-ylab="Residuals")
-abline(0, 0, lty=1, col="red")
+## Lasso-Selected Model
+
+```{r rq1-lasso-model}
+rq1_lasso_model <- lm(MOID..AU. ~ e + i..deg. + w..deg. + Node..deg. + q..AU. + P..yr.,
+  data = sub.orbit
+)
+
+summary(rq1_lasso_model)
 ```
 
-```{r}
-#RQ2: Do the minimum (q) and maximum (Q) distances between the comet and the Sun have an impact on the orbital period (P)? Additionally, are these minimum and maximum distance values correlated or do they depend on some or all other orbital elements?
+All variables except `i.deg` are significant predictors for MOID.
 
+```{r rq1-lasso-model-diagnostics, fig.height=8}
+par(mfrow = c(2, 2))
+qqnorm(residuals(rq1_lasso_model)); qqline(residuals(rq1_lasso_model))
+hist(residuals(rq1_lasso_model), main = "Histogram of Residuals", xlab = "Residuals")
+plot(residuals(rq1_lasso_model), xlab = "Order", ylab = "Residuals")
+abline(0, 0, lty = 1, col = "red")
+plot(fitted(rq1_lasso_model), residuals(rq1_lasso_model), xlab = "Fitted Values", ylab = "Residuals")
+abline(0, 0, lty = 1, col = "red")
+```
+
+# Research Question 2: Impact of Perihelion & Aphelion on Orbital Period
+
+> **RQ2:** Do the minimum (q) and maximum (Q) distances between the comet and the Sun
+> have an impact on the orbital period (P)? Are these values correlated or dependent on
+> other orbital elements?
+
+## Initial Model with Interaction Term
+
+```{r rq2-initial-model}
 rq2.lm <- lm(P..yr. ~ q..AU. + Q..AU. + I(q..AU. * Q..AU.), data = sub.orbit)
 summary(rq2.lm)
-#Interpretation: The maximum distance (Q) and the interaction between minimum (q) and maximum (Q) distances significantly impact the orbital period of the comet, while the minimum distance (q) alone does not have a significant orbital period (P).
+```
 
-#Further correlation test
-cor(sub.orbit$q..AU., sub.orbit$Q..AU.)
-#Interpretation: With the correlation value of 0.044, there is a weak positive correlation between the two.
+The maximum distance (Q) and the q*Q interaction significantly impact orbital period,
+while minimum distance (q) alone does not.
 
-#More correlation testing procedures: Overall correlation
-cor(sub.orbit)
-#Interpretation: Based on the testing procedures, it can be seen that e has the highest correlation with both q and Q.
-#This means that these two are also dependent on q and Q.
+## Correlation Analysis
 
-#Based on this further regression modeling is conducted:
+```{r rq2-correlation}
+cat("Correlation between q and Q:", cor(sub.orbit$q..AU., sub.orbit$Q..AU.), "\n")
+```
+
+Weak positive correlation (r = 0.044) between perihelion and aphelion distances.
+
+```{r rq2-correlation-matrix}
+round(cor(sub.orbit), 2)
+```
+
+Eccentricity (`e`) has the highest correlation with both `q` and `Q`.
+
+## Extended Model with Eccentricity
+
+```{r rq2-extended-model}
 rq2.lm.2 <- lm(P..yr. ~ q..AU. + Q..AU. + I(q..AU. * Q..AU.) + e, data = sub.orbit)
 summary(rq2.lm.2)
-#Interpretation: all of the variables are now significant.
 ```
 
-```{r}
-#RQ2 Model Diagnostics:
-#Checking for normality
-print(shapiro.test(resid(rq2.lm)))
-print(shapiro.test(resid(rq2.lm.2)))
-#Both models are not normally distributed.
+With eccentricity included, **all variables become significant**.
 
-#Checking for multicollinearity
-print(vif(rq2.lm))
-print(vif(rq2.lm.2))
-#In both mode, Q and the interaction terms between q and Q have high VIFs.
+## Model Diagnostics (RQ2)
 
-#Checking for Homoscedasticity/heteroskedasticity
-print(ncvTest(rq2.lm))
-print(ncvTest(rq2.lm.2))
-#With p-value less than 0.05, there is heteroskedasticity in both of the model. 
-
-#Checking for leverage points
-cook.rq.2.lim <- cooks.distance(rq2.lm)
-cook.rq.2.lm.2 <- cooks.distance(rq2.lm.2)
-halfnorm(cook.rq.2.lim,5,ylab="Cook’s distances")
-halfnorm(cook.rq.2.lm.2,ylab = "Cook's distances")
-#The two outliers are 159 and 123.
+```{r rq2-normality}
+# Normality
+cat("Model 1:\n"); shapiro.test(resid(rq2.lm))
+cat("\nModel 2:\n"); shapiro.test(resid(rq2.lm.2))
 ```
 
-```{r}
-#RQ3.Is there any relationship between the two response variables, MOID and P? Is there a way to predict the likelihood and/or frequency of a Near-Earth comet sighting? Provide justifications using the results of the regression analysis.
+Both models' residuals are **not normally distributed**.
+
+```{r rq2-vif}
+# Multicollinearity
+cat("Model 1 VIF:\n"); vif(rq2.lm)
+cat("\nModel 2 VIF:\n"); vif(rq2.lm.2)
+```
+
+In both models, Q and the q*Q interaction term have high VIFs.
+
+```{r rq2-heteroskedasticity}
+# Heteroskedasticity
+cat("Model 1:\n"); ncvTest(rq2.lm)
+cat("\nModel 2:\n"); ncvTest(rq2.lm.2)
+```
+
+Both models exhibit **heteroskedasticity** (p < 0.05).
+
+```{r rq2-cooks-distance}
+# Influential observations
+par(mfrow = c(1, 2))
+halfnorm(cooks.distance(rq2.lm), 5, ylab = "Cook's Distances", main = "Model 1")
+halfnorm(cooks.distance(rq2.lm.2), 5, ylab = "Cook's Distances", main = "Model 2")
+```
+
+Key outliers: observations **159** and **123**.
+
+# Research Question 3: Relationship Between MOID and Orbital Period
+
+> **RQ3:** Is there any relationship between the two response variables, MOID and P?
+> Is there a way to predict the likelihood and/or frequency of a near-Earth comet sighting?
+
+## Simple Linear Model: MOID ~ P
+
+```{r rq3-simple-model}
 rq3.lm <- lm(MOID..AU. ~ P..yr., data = sub.orbit)
 summary(rq3.lm)
-#Interpretation: There is a really high significant correlation between MOID and P although the coefficient is very low at 0.0012.
+```
 
-#Checking for correlation
-cor(sub.orbit$MOID..AU., sub.orbit$P..yr.)
-#Interpretation: There is a decently high correlation between the two as well.
+There is a **highly significant** relationship between MOID and P, though the coefficient
+is small (0.0012).
 
-#Further correlation procedures
-#Based on the correlation modeling above from RQ2, it can be seen that MOID is positively correlated with P (0.34) and Q (0.29).Meanwhile, P is positively and strongly correlation with Q (0.98) and e (0.60).
+```{r rq3-correlation}
+cat("Correlation between MOID and P:", cor(sub.orbit$MOID..AU., sub.orbit$P..yr.), "\n")
+```
 
-#Further regression modeling using Q, and e as additional variables
+Moderate positive correlation (r ≈ 0.34).
+
+## Extended Model: MOID ~ P + Q + e
+
+From the RQ2 correlation analysis, MOID is positively correlated with P (0.34) and Q (0.29),
+while P is strongly correlated with Q (0.98) and e (0.60).
+
+```{r rq3-extended-model}
 rq3.lm.2 <- lm(MOID..AU. ~ P..yr. + Q..AU. + e, data = sub.orbit)
 summary(rq3.lm.2)
-#Interpretation: Results make sense since MOID is strongly correlated with P and Q, not with e.
-
-#Predicting for likelihood using logistic regression
-#Creating binary for Near Earth comets
-sub.orbit$Near <- ifelse(sub.orbit$MOID..AU. < 0.05, 1, 0) #Values which are less than 0.05
-rq3.lm.3 <- glm(Near ~ P..yr. + q..AU. + Q..AU. + e + i..deg. + w..deg. + Node..deg., family = binomial, data = sub.orbit)
-summary(rq3.lm.3)
-#Interpretation: Only q, e, and Node degrees are significant predictors
 ```
 
-```{r}
-#RQ3 Model Diagnostics:
-#Checking for normality
-print(shapiro.test(resid(rq3.lm)))
-print(shapiro.test(resid(rq3.lm.2)))
-print(shapiro.test(resid(rq3.lm.3)))
-#Interpretation: None of the models' residuals are normally distributed.
+## Logistic Regression: Predicting Near-Earth Classification
 
-#Checking for multicollinearity; the first model for rq3 is not checked since there's only one predictor variable
-print(vif(rq3.lm.2))
-print(vif(rq3.lm.3))
-#In both models, P and Q have high VIF values thus big multicollinearity.
+A comet is classified as "near-Earth" if MOID < 0.05 AU.
 
-#Checking for Homoscedasticity/heteroskedasticity
-print(ncvTest(rq3.lm))
-print(ncvTest(rq3.lm.2))
-#Interpretation: There is heteroskedasticity in both models
+```{r rq3-logistic-model}
+sub.orbit$Near <- ifelse(sub.orbit$MOID..AU. < 0.05, 1, 0)
 
-#Checking for Homoscedasticity/heteroskedasticity for logisitic regression model
-print(bptest(rq3.lm.3))
-#Interpretation: There is heteroskedasticity in the logistic regression model as well.
+cat("Near-Earth comets:", sum(sub.orbit$Near), "\n")
+cat("Non-near-Earth comets:", sum(sub.orbit$Near == 0), "\n")
 
-#Checking for outlier values
-cook.rq.3 <- cooks.distance(rq3.lm)
-cook.rq.3.2 <- cooks.distance(rq3.lm.2)
-cook.rq.3.3 <- cooks.distance(rq3.lm.3)
-halfnorm(cook.rq.3,5,ylab="Cook’s distances")
-halfnorm(cook.rq.3.2,5,ylab="Cook’s distances")
-halfnorm(cook.rq.3.3,5,ylab="Cook’s distances")
-#In the original model, the outliers are 123, 98, and 159.
-#In the second model, the outliers are 159, 158, 98, and 123.
-#In the logistic model, the outliers are 123, 98, and 22.
-#In all three models, it seems that 123 and 98 are outliers.
+rq3.logistic <- glm(
+  Near ~ P..yr. + q..AU. + Q..AU. + e + i..deg. + w..deg. + Node..deg.,
+  family = binomial,
+  data = sub.orbit
+)
+
+summary(rq3.logistic)
 ```
 
+Only **q**, **e**, and **Node.deg** are significant predictors of near-Earth classification.
 
+## Model Diagnostics (RQ3)
 
+```{r rq3-normality}
+# Normality
+cat("Simple model:\n"); shapiro.test(resid(rq3.lm))
+cat("\nExtended model:\n"); shapiro.test(resid(rq3.lm.2))
+cat("\nLogistic model:\n"); shapiro.test(resid(rq3.logistic))
+```
 
+None of the models' residuals are normally distributed.
 
+```{r rq3-vif}
+# Multicollinearity
+cat("Extended model VIF:\n"); vif(rq3.lm.2)
+cat("\nLogistic model VIF:\n"); vif(rq3.logistic)
+```
 
+P and Q have high VIF values in both models, indicating significant **multicollinearity**.
 
+```{r rq3-heteroskedasticity}
+# Heteroskedasticity
+cat("Simple model:\n"); ncvTest(rq3.lm)
+cat("\nExtended model:\n"); ncvTest(rq3.lm.2)
+cat("\nLogistic model (Breusch-Pagan):\n"); bptest(rq3.logistic)
+```
 
+All three models exhibit **heteroskedasticity**.
 
+```{r rq3-cooks-distance, fig.height=4}
+# Influential observations
+par(mfrow = c(1, 3))
+halfnorm(cooks.distance(rq3.lm), 5, ylab = "Cook's Distances", main = "Simple Model")
+halfnorm(cooks.distance(rq3.lm.2), 5, ylab = "Cook's Distances", main = "Extended Model")
+halfnorm(cooks.distance(rq3.logistic), 5, ylab = "Cook's Distances", main = "Logistic Model")
+```
 
+Consistent outliers across models: observations **123** and **98**.
